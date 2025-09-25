@@ -1,0 +1,21 @@
+# Entornos
+**/.venv/
+__pycache__/
+*.pyc
+
+# Config locales / secretos
+rag/.env
+infra/.env
+.env
+*.local
+*.secret
+secrets/
+*.envrc
+
+# Datos y outputs
+rag/data/**/*
+!rag/data/.keep
+
+# Editor/OS
+.vscode/
+.DS_Store
