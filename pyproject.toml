@@ -1,0 +1,9 @@
+[ -f pyproject.toml ] || cat > pyproject.toml <<'TOML'
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-select = ["I"]
+
+[tool.ruff.format]
+quote-style = "double"
+TOML
