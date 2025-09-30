@@ -218,6 +218,35 @@ def answer(query: str, k: int) -> str:
 # CLI
 # =======================
 if __name__ == "__main__":
-    import sys
-    q = " ".join(sys.argv[1:]) or "¿Qué es MCP y para qué sirve?"
+    import argparse, sys
+
+    parser = argparse.ArgumentParser(description="Consulta RAG sobre tus documentos")
+    parser.add_argument("question", nargs="*", help="Texto de la pregunta")
+    parser.add_argument("--k", type=int, help="Top-K final (por defecto: TOP_K de .env)")
+    parser.add_argument("--threshold", type=float, help="Umbral de score 0..1 (SCORE_THRESHOLD)")
+    parser.add_argument("--max-per-doc", type=int, help="Máximo de chunks por documento (MAX_CHUNKS_PER_DOC)")
+    parser.add_argument("--no-round-robin", action="store_true", help="Desactivar round-robin entre docs")
+    parser.add_argument("--rerank", action="store_true", help="Forzar activar reranker (ignora .env)")
+    parser.add_argument("--no-rerank", action="store_true", help="Forzar desactivar reranker")
+    parser.add_argument("--max-ctx", type=int, help="Límite de caracteres del contexto (MAX_CONTEXT_CHARS)")
+    args = parser.parse_args()
+
+    # Overrides de runtime (si se pasan)
+    if args.k is not None:
+        TOP_K = args.k
+    if args.threshold is not None:
+        SCORE_THRESHOLD = args.threshold
+    if args.max_per_doc is not None:
+        MAX_PER_DOC = args.max_per_doc
+    if args.no_round_robin:
+        ROUND_ROBIN = False
+    if args.max_ctx is not None:
+        MAX_CTX = args.max_ctx
+    if args.rerank:
+        RERANKER_ENABLED = True
+    if args.no_rerank:
+        RERANKER_ENABLED = False
+
+    q = " ".join(args.question) or "¿Qué es MCP y para qué sirve?"
     print(answer(q, k=TOP_K))
+
