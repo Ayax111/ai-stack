@@ -1,0 +1,20 @@
+cat > .gitignore <<'GIT'
+**/.venv/
+__pycache__/
+*.pyc
+.vscode/
+.DS_Store
+
+# secrets / locales
+rag/.env
+infra/.env
+.env
+*.local
+*.secret
+secrets/
+*.envrc
+
+# datos
+rag/data/**/*
+!rag/data/.keep
+GIT
