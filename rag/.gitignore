@@ -1,9 +1,11 @@
-# Entornos
+cat > .gitignore <<'GIT'
 **/.venv/
 __pycache__/
 *.pyc
+.vscode/
+.DS_Store
 
-# Config locales / secretos
+# secrets / locales
 rag/.env
 infra/.env
 .env
@@ -12,10 +14,7 @@ infra/.env
 secrets/
 *.envrc
 
-# Datos y outputs
+# datos
 rag/data/**/*
 !rag/data/.keep
-
-# Editor/OS
-.vscode/
-.DS_Store
+GIT
