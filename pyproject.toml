@@ -1,9 +1,7 @@
-[ -f pyproject.toml ] || cat > pyproject.toml <<'TOML'
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-select = ["I"]
+extend-select = ["I"]  # ordenar imports
 
 [tool.ruff.format]
 quote-style = "double"
-TOML

@@ -18,3 +18,5 @@ secrets/
 rag/data/**/*
 !rag/data/.keep
 GIT
+node_modules/
+mcp/node_modules/
