@@ -251,4 +251,3 @@ cd ~/ai-stack/infra && docker compose ps
 ## 12) Licencia / créditos
 
 Proyecto de aprendizaje personal. Usa componentes open‑source y LM Studio como servidor local OpenAI‑compatible.
-

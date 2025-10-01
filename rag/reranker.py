@@ -1,9 +1,11 @@
-from typing import List, Dict, Tuple
 import os
+from typing import Dict, List, Tuple
+
 from sentence_transformers import CrossEncoder
 
 # Carga lazy (para no penalizar arranque si está desactivado)
 _model = None
+
 
 def _get_model():
     global _model
@@ -11,6 +13,7 @@ def _get_model():
         name = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
         _model = CrossEncoder(name)  # CPU va bien con este modelo pequeño
     return _model
+
 
 def rerank(query: str, rows: List[Dict], top_k: int) -> List[Dict]:
     """Devuelve rows reordenados por score del cross-encoder, cortados a top_k."""

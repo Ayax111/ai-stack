@@ -1,15 +1,14 @@
 # ~/ai-stack/rag/query.py
 from __future__ import annotations
+
 import os
-from typing import List, Dict
 from collections import defaultdict, deque
 from pathlib import Path
+from typing import Dict, List
 
 from dotenv import load_dotenv
-load_dotenv(override=True)
-from sqlalchemy import create_engine, text
-
 from llm_client import chat  # cliente OpenAI-compatible hacia LM Studio
+from sqlalchemy import create_engine, text
 
 # =======================
 # Carga de configuración
@@ -42,6 +41,7 @@ BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence-transformers").lower()
 # =======================
 if BACKEND == "sentence-transformers":
     from sentence_transformers import SentenceTransformer
+
     _enc = SentenceTransformer(os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"))
 
     def embed(q: str) -> List[float]:
@@ -50,6 +50,7 @@ if BACKEND == "sentence-transformers":
 
 elif BACKEND == "lmstudio":
     import httpx
+
     EMB_BASE = os.getenv("EMBEDDING_BASE_URL", os.getenv("LLM_BASE_URL", "")).rstrip("/")
     EMB_KEY = os.getenv("EMBEDDING_API_KEY", os.getenv("LLM_API_KEY", "lm-studio"))
     EMB_MODEL = os.getenv("EMBEDDING_MODEL")
@@ -77,19 +78,28 @@ else:
 # =======================
 engine = create_engine(DB_URL, future=True)
 
+
 def retrieve(query: str, limit: int) -> List[Dict]:
     """Devuelve los 'limit' candidatos más cercanos por distancia vectorial."""
     qvec = embed(query)
     qlit = "[" + ",".join(f"{x:.6f}" for x in qvec) + "]"
     with engine.begin() as conn:
-        rows = conn.execute(text("""
+        rows = (
+            conn.execute(
+                text("""
             SELECT doc_id, chunk_id, content,
                    1 - (embedding <=> (:qvec)::vector) AS score
             FROM documents
             ORDER BY embedding <=> (:qvec)::vector
             LIMIT :limit
-        """), {"qvec": qlit, "limit": limit}).mappings().all()
+        """),
+                {"qvec": qlit, "limit": limit},
+            )
+            .mappings()
+            .all()
+        )
     return rows
+
 
 # =======================
 # Filtrado y diversidad
@@ -131,6 +141,7 @@ def _filter_and_diversify(rows: List[Dict]) -> List[Dict]:
                 break
         return mixed[:TOP_K]
 
+
 def build_context(selected: List[Dict], all_rows: List[Dict]) -> str:
     """Construye el contexto con límite MAX_CTX y, si DEBUG, imprime detalles."""
     if DEBUG:
@@ -155,6 +166,7 @@ def build_context(selected: List[Dict], all_rows: List[Dict]) -> str:
         total += len(piece) + 2
     return "\n\n".join(parts)
 
+
 def format_sources(selected: List[Dict]) -> str:
     """Lista de fuentes agrupadas por documento."""
     grouped = defaultdict(list)
@@ -167,6 +179,7 @@ def format_sources(selected: List[Dict]) -> str:
         uniq = sorted(set(chunks))
         lines.append(f"- {doc}  (chunks: {', '.join(map(str, uniq))})")
     return "Fuentes:\n" + "\n".join(lines)
+
 
 # =======================
 # Reranker (opcional)
@@ -182,6 +195,7 @@ def maybe_rerank(query: str, rows: List[Dict], candidates: int) -> List[Dict]:
             print(f"[WARN] No se pudo importar el reranker: {e}")
         return rows
     return crossenc_rerank(query, rows, top_k=candidates)
+
 
 # =======================
 # Orquestación de la respuesta
@@ -207,28 +221,37 @@ def answer(query: str, k: int) -> str:
     system = (
         "Eres un asistente preciso. Responde SOLO con la información del CONTEXTO. "
         "Si falta información, di explícitamente: 'No tengo datos suficientes en el contexto'. "
-        'Cita usando el formato [doc#chunk]. Sé conciso.'
+        "Cita usando el formato [doc#chunk]. Sé conciso."
     )
     user = f"Pregunta: {query}\n\n--- CONTEXTO ---\n{context}\n\nResponde:"
 
     reply = chat(system, user, temperature=0.2)
     return reply.strip() + "\n\n" + format_sources(selected)
 
+
 # =======================
 # CLI
 # =======================
 if __name__ == "__main__":
-    import argparse, sys
+    import argparse
 
     parser = argparse.ArgumentParser(description="Consulta RAG sobre tus documentos")
     parser.add_argument("question", nargs="*", help="Texto de la pregunta")
     parser.add_argument("--k", type=int, help="Top-K final (por defecto: TOP_K de .env)")
     parser.add_argument("--threshold", type=float, help="Umbral de score 0..1 (SCORE_THRESHOLD)")
-    parser.add_argument("--max-per-doc", type=int, help="Máximo de chunks por documento (MAX_CHUNKS_PER_DOC)")
-    parser.add_argument("--no-round-robin", action="store_true", help="Desactivar round-robin entre docs")
-    parser.add_argument("--rerank", action="store_true", help="Forzar activar reranker (ignora .env)")
+    parser.add_argument(
+        "--max-per-doc", type=int, help="Máximo de chunks por documento (MAX_CHUNKS_PER_DOC)"
+    )
+    parser.add_argument(
+        "--no-round-robin", action="store_true", help="Desactivar round-robin entre docs"
+    )
+    parser.add_argument(
+        "--rerank", action="store_true", help="Forzar activar reranker (ignora .env)"
+    )
     parser.add_argument("--no-rerank", action="store_true", help="Forzar desactivar reranker")
-    parser.add_argument("--max-ctx", type=int, help="Límite de caracteres del contexto (MAX_CONTEXT_CHARS)")
+    parser.add_argument(
+        "--max-ctx", type=int, help="Límite de caracteres del contexto (MAX_CONTEXT_CHARS)"
+    )
     args = parser.parse_args()
 
     # Overrides de runtime (si se pasan)
@@ -249,4 +272,3 @@ if __name__ == "__main__":
 
     q = " ".join(args.question) or "¿Qué es MCP y para qué sirve?"
     print(answer(q, k=TOP_K))
-

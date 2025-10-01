@@ -55,3 +55,19 @@ pip:
 # Abre una shell interactiva con el venv activo (sal con 'exit')
 shell:
 > cd rag && bash -lc 'source . .venv/bin/activate && exec bash -i'
+
+.PHONY: pre-commit-install pre-commit-all secrets-scan secrets-audit
+
+pre-commit-install:
+> . rag/.venv/bin/activate; pip install pre-commit ruff detect-secrets
+> pre-commit install
+
+pre-commit-all:
+> pre-commit run --all-files
+
+secrets-scan:
+> detect-secrets scan > .secrets.baseline
+> @echo "Baseline actualizado: .secrets.baseline (recuerda revisarlo y commitearlo)"
+
+secrets-audit:
+> detect-secrets audit .secrets.baseline
