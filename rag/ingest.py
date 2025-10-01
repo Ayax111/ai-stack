@@ -1,15 +1,17 @@
 # ~/ai-stack/rag/ingest.py
 """Pipeline que trocea documentos, calcula embeddings y los guarda en Postgres."""
 
-import os, json, glob, re
+import glob
+import json
+import os
+import re
 from datetime import datetime
 from typing import List
-from pathlib import Path
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
+from sqlalchemy import create_engine, text
 
 # Cargamos variables definidas en `.env` (Rutas, claves, configuración del modelo, etc.).
 load_dotenv()
@@ -72,9 +74,7 @@ elif BACKEND == "lmstudio":
         r = httpx.post(EMB_URL, json=payload, headers=HEADERS, timeout=TIMEOUT)
         if r.status_code == 404 and EMB_ENDPOINT == "embeddings":
             # Fallback a un endpoint singular si la build lo expone con nombre distinto.
-            r = httpx.post(
-                f"{EMB_BASE}/embedding", json=payload, headers=HEADERS, timeout=TIMEOUT
-            )
+            r = httpx.post(f"{EMB_BASE}/embedding", json=payload, headers=HEADERS, timeout=TIMEOUT)
         r.raise_for_status()
         data = r.json()
         return [d["embedding"] for d in data["data"]]
@@ -97,6 +97,7 @@ elif BACKEND == "lmstudio":
 else:
     raise SystemExit(f"EMBEDDING_BACKEND no soportado: {BACKEND}")
 
+
 # ----------------- Utilidades -----------------
 def ensure_schema():
     """Crea la tabla documents con la dimensión correcta y un índice HNSW (cosine)."""
@@ -107,12 +108,14 @@ def ensure_schema():
         exists = conn.execute(text("SELECT to_regclass('public.documents')")).scalar()
         if exists:
             # Verifica dimensión existente
-            typ = conn.execute(text("""
+            typ = conn.execute(
+                text("""
                 SELECT format_type(a.atttypid, a.atttypmod)
                 FROM pg_attribute a
                 WHERE a.attrelid = 'documents'::regclass
                   AND a.attname = 'embedding' AND NOT a.attisdropped
-            """)).scalar()
+            """)
+            ).scalar()
             m = re.search(r"vector\((\d+)\)", typ or "")
             if m and int(m.group(1)) != EMB_DIM:
                 count = conn.execute(text("SELECT COUNT(*) FROM documents")).scalar()
@@ -123,7 +126,8 @@ def ensure_schema():
                 )
         else:
             # Si no existe la tabla, la creamos junto con el índice aproximado.
-            conn.execute(text(f"""
+            conn.execute(
+                text(f"""
                 CREATE TABLE documents (
                   id BIGSERIAL PRIMARY KEY,
                   doc_id   TEXT NOT NULL,
@@ -132,11 +136,15 @@ def ensure_schema():
                   metadata JSONB,
                   embedding VECTOR({EMB_DIM})
                 );
-            """))
-            conn.execute(text("""
+            """)
+            )
+            conn.execute(
+                text("""
                 CREATE INDEX documents_embedding_hnsw
                 ON documents USING hnsw (embedding vector_cosine_ops)
-            """))
+            """)
+            )
+
 
 def read_text(path: str) -> str:
     """Lee un archivo de texto o extrae el contenido de un PDF usando pypdf."""
@@ -147,6 +155,7 @@ def read_text(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
+
 def split(text: str) -> List[str]:
     """Divide el texto en fragmentos solapados para mejorar el recall del RAG."""
 
@@ -154,33 +163,41 @@ def split(text: str) -> List[str]:
         chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP
     ).split_text(text)
 
+
 def to_vec_literal(v: List[float]) -> str:
     """Convierte una lista de floats a literal PostgreSQL compatible con pgvector."""
 
     return "[" + ",".join(f"{x:.6f}" for x in v) + "]"
+
 
 def upsert(doc_id: str, chunks: List[str]):
     """Inserta fragmentos y embeddings en la tabla (ignora duplicados exactos)."""
 
     with engine.begin() as conn:
         for i in range(0, len(chunks), 64):
-            sub = chunks[i:i+64]
+            sub = chunks[i : i + 64]
             vecs = embed_batch(sub)
             now = datetime.utcnow().isoformat()
             rows = []
             for j, (txt, emb) in enumerate(zip(sub, vecs)):
-                rows.append({
-                    "doc_id": doc_id,
-                    "chunk_id": i + j,
-                    "content": txt,
-                    "metadata": json.dumps({"source": doc_id, "ingested_at": now}),
-                    "embedding": to_vec_literal(emb)
-                })
-            conn.execute(text("""
+                rows.append(
+                    {
+                        "doc_id": doc_id,
+                        "chunk_id": i + j,
+                        "content": txt,
+                        "metadata": json.dumps({"source": doc_id, "ingested_at": now}),
+                        "embedding": to_vec_literal(emb),
+                    }
+                )
+            conn.execute(
+                text("""
                 INSERT INTO documents (doc_id, chunk_id, content, metadata, embedding)
                 VALUES (:doc_id, :chunk_id, :content, (:metadata)::jsonb, (:embedding)::vector)
                 ON CONFLICT DO NOTHING
-            """), rows)
+            """),
+                rows,
+            )
+
 
 def collect_paths(root: str) -> List[str]:
     """Recupera todos los archivos de texto/markdown/pdf de forma recursiva."""
@@ -191,6 +208,7 @@ def collect_paths(root: str) -> List[str]:
     for ext in ("*.txt", "*.md", "*.pdf"):
         pats += glob.glob(os.path.join(root, "**", ext), recursive=True)
     return sorted(pats)
+
 
 def main():
     """Ejecuta la ingesta completa: preparar BD, leer archivos y guardar embeddings."""
@@ -206,6 +224,7 @@ def main():
         chunks = split(text)
         upsert(os.path.basename(p), chunks)
     print("✅ Ingesta completada.")
+
 
 if __name__ == "__main__":
     main()
