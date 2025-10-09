@@ -71,3 +71,11 @@ secrets-scan:
 
 secrets-audit:
 > detect-secrets audit .secrets.baseline
+
+.PHONY: eval
+eval:
+> $(PY) python eval_rag.py
+
+.PHONY: eval-ab
+eval-ab:
+> $(PY) python eval_rag_ab.py

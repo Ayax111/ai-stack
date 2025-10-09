@@ -1,0 +1,151 @@
+# rag/tests.yaml
+
+- id: nist-funciones
+  query: "¿Cuáles son las 6 funciones del NIST CSF 2.0 y para qué sirven?"
+  must_have:
+    - "GOBERNAR"
+    - "GOVERN"
+    - "IDENTIFICAR"
+    - "IDENTIFY"
+    - "PROTEGER"
+    - "PROTECT"
+    - "DETECTAR"
+    - "DETECT"
+    - "RESPONDER"
+    - "RESPOND"
+    - "RECUPERAR"
+    - "RECOVER"
+  should_have:
+    - "CSF"
+    - "SME"
+    - "PYMES"
+
+- id: nist-gobernanza-preguntas
+  query: "Dame preguntas iniciales de gobernanza que plantea el NIST CSF para una pyme."
+  must_have:
+    - "misión"
+    - "mission"
+    - "riesgos"
+    - "risks"
+    - "requisitos"
+    - "requirements"
+  should_have:
+    - "legales"
+    - "regulatory"
+    - "contractuales"
+    - "legal"
+
+- id: ad-nessus-puerto
+  query: "¿Cómo accedo a la interfaz de Nessus desplegado en Docker en la red del laboratorio?"
+  must_have:
+    - "8834"
+    - "https://"
+    - "Nessus"
+  should_have:
+    - "Docker"
+    - "IP"
+    - "warning"
+    - "not secure"
+
+- id: ad-nessus-scan
+  query: "Quiero lanzar un escaneo avanzado del controlador de dominio con Nessus. ¿Qué tipo de scan y qué credenciales uso?"
+  must_have:
+    - "Advanced Scan"
+    - "credentials"
+    - "credenciales"
+  should_have:
+    - "domain controller"
+    - "Active Directory"
+
+- id: ad-zerologon
+  query: "Explica brevemente la vulnerabilidad Zerologon y por qué es crítica."
+  must_have:
+    - "Zerologon"
+    - "CVE-2020-1472"
+    - "Netlogon"
+  should_have:
+    - "CVSS"
+    - "privilege escalation"
+    - "elevación de privilegios"
+
+- id: burp-proxy
+  query: "¿Qué hace Burp Proxy y cómo intercepto y reenvío una petición?"
+  must_have:
+    - "Intercept is on"
+    - "Forward"
+    - "HTTP history"
+  should_have:
+    - "Proxy > Intercept"
+    - "Proxy > HTTP history"
+
+- id: burp-scope
+  query: "¿Cómo defino el alcance (scope) del objetivo en Burp y filtro solo el tráfico relevante?"
+  must_have:
+    - "Add to scope"
+    - "in-scope"
+    - "Site map"
+  should_have:
+    - "Target"
+    - "display filter"
+
+- id: sqli-stacked
+  query: "Define 'stacked queries' en SQLi y pon un ejemplo."
+  must_have:
+    - "multiple statements"
+    - "semicolon"
+    - "múltiples sentencias"
+    - "punto y coma"
+  should_have:
+    - "DROP"
+    - "SELECT"
+
+- id: sqli-union-dumpfile
+  query: "¿Qué limitaciones tiene usar UNION SELECT ... INTO DUMPFILE en MySQL?"
+  must_have:
+    - "only the last SELECT"
+    - "does not overwrite"
+    - "solo la última SELECT"
+    - "no se sobrescribe"
+  should_have:
+    - "Apache"
+    - "DocumentRoot"
+
+- id: sqli-load-file
+  query: "¿Qué requisitos tiene LOAD_FILE() para leer ficheros y qué archivo ayuda a encontrar el DocumentRoot?"
+  must_have:
+    - "FILE"
+    - "max_allowed_packet"
+    - "/etc/apache2"
+  should_have:
+    - "DocumentRoot"
+    - "sites-available"
+
+- id: sqli-limit-request
+  query: "¿Qué límites impone Apache al tamaño de la petición y cómo afecta a SQLi por GET vs POST?"
+  must_have:
+    - "LimitRequestLine"
+    - "LimitRequestBody"
+    - "8190"
+  should_have:
+    - "2GB"
+    - "HTTP 414"
+
+- id: oscp-exam
+  query: "Resume la estructura del examen OSCP: duración, puntos de aprobación y bonus."
+  must_have:
+    - "24"
+    - "70"
+    - "bonus"
+  should_have:
+    - "proctored"
+    - "report"
+
+- id: oscp-labs
+  query: "¿Qué recomiendan practicar para OSCP antes del examen?"
+  must_have:
+    - "HTB"
+    - "Proving Grounds"
+    - "TryHackMe"
+  should_have:
+    - "labs"
+    - "notes"
