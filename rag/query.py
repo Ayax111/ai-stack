@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from collections import defaultdict, deque
 from pathlib import Path
 from typing import Dict, List
 
@@ -10,16 +9,16 @@ from dotenv import load_dotenv
 from llm_client import chat  # cliente OpenAI-compatible hacia LM Studio
 from sqlalchemy import create_engine, text
 
-# =======================
-# Carga de configuración
-# =======================
+# Cargar .env (ruta explícita, override=True)
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=True)
 
+# =======================
+# Configuración
+# =======================
 DB_URL = os.getenv("DATABASE_URL")
 if not DB_URL:
-    raise SystemExit("Falta DATABASE_URL en .env")
+    raise SystemExit("Falta DATABASE_URL en .env (o no se pudo cargar).")
 
-# Retrieve / debug
 TOP_K = int(os.getenv("TOP_K", "5"))
 SCORE_THRESHOLD = float(os.getenv("SCORE_THRESHOLD", "0.25"))
 DEBUG = os.getenv("DEBUG_RETRIEVE", "0") == "1"
@@ -45,7 +44,6 @@ if BACKEND == "sentence-transformers":
     _enc = SentenceTransformer(os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3"))
 
     def embed(q: str) -> List[float]:
-        # normalizamos para trabajar bien con cosine
         return _enc.encode([q], normalize_embeddings=True)[0].tolist()
 
 elif BACKEND == "lmstudio":
@@ -65,7 +63,6 @@ elif BACKEND == "lmstudio":
         payload = {"model": EMB_MODEL, "input": [q]}
         r = httpx.post(EMB_URL, json=payload, headers=HEADERS, timeout=TIMEOUT)
         if r.status_code == 404 and EMB_ENDPOINT == "embeddings":
-            # fallback por si alguna build expone 'embedding' en singular
             r = httpx.post(f"{EMB_BASE}/embedding", json=payload, headers=HEADERS, timeout=TIMEOUT)
         r.raise_for_status()
         data = r.json()
@@ -80,46 +77,49 @@ engine = create_engine(DB_URL, future=True)
 
 
 def retrieve(query: str, limit: int) -> List[Dict]:
-    """Devuelve los 'limit' candidatos más cercanos por distancia vectorial."""
+    """Devuelve los 'limit' candidatos más cercanos por distancia vectorial (+threshold)."""
     qvec = embed(query)
     qlit = "[" + ",".join(f"{x:.6f}" for x in qvec) + "]"
     with engine.begin() as conn:
         rows = (
             conn.execute(
-                text("""
+                text(
+                    """
             SELECT doc_id, chunk_id, content,
                    1 - (embedding <=> (:qvec)::vector) AS score
             FROM documents
             ORDER BY embedding <=> (:qvec)::vector
             LIMIT :limit
-        """),
+        """
+                ),
                 {"qvec": qlit, "limit": limit},
             )
             .mappings()
             .all()
         )
-    return rows
+    return [r for r in rows if r["score"] is None or r["score"] >= SCORE_THRESHOLD]
 
 
 # =======================
 # Filtrado y diversidad
 # =======================
 def _filter_and_diversify(rows: List[Dict]) -> List[Dict]:
-    """Aplica SCORE_THRESHOLD y MAX_PER_DOC; opcionalmente round-robin entre docs."""
-    eligible = [r for r in rows if r["score"] is None or r["score"] >= SCORE_THRESHOLD]
-    if not eligible:
+    """Aplica MAX_PER_DOC; opcionalmente round-robin; corta a TOP_K."""
+    if not rows:
         return []
 
-    groups = defaultdict(list)
-    for r in eligible:
-        groups[r["doc_id"]].append(r)
+    groups = {}
+    for r in rows:
+        doc = r["doc_id"]
+        groups.setdefault(doc, []).append(r)
 
     # Limitar por documento respetando el orden por similitud
     for doc in groups:
         groups[doc] = groups[doc][:MAX_PER_DOC]
 
     if ROUND_ROBIN:
-        # Alterna entre documentos para más cobertura
+        from collections import deque
+
         queues = [deque(groups[doc]) for doc in sorted(groups.keys())]
         mixed, added = [], 0
         while queues and added < TOP_K:
@@ -133,7 +133,6 @@ def _filter_and_diversify(rows: List[Dict]) -> List[Dict]:
             queues = new_queues
         return mixed
     else:
-        # Secuencial por grupos
         mixed: List[Dict] = []
         for doc in groups:
             mixed.extend(groups[doc])
@@ -143,13 +142,12 @@ def _filter_and_diversify(rows: List[Dict]) -> List[Dict]:
 
 
 def build_context(selected: List[Dict], all_rows: List[Dict]) -> str:
-    """Construye el contexto con límite MAX_CTX y, si DEBUG, imprime detalles."""
+    """Construye el contexto con límite MAX_CTX y DEBUG opcional."""
     if DEBUG:
         print("\n== Pasajes recuperados (raw) ==")
         for r in all_rows:
             preview = (r["content"] or "").replace("\n", " ")[:90]
             print(f"[{r['doc_id']}#{r['chunk_id']}] score={r['score']:.3f} → {preview}...")
-    if DEBUG:
         print("\n== Pasajes seleccionados (tras límites por doc / threshold) ==")
         for r in selected:
             preview = (r["content"] or "").replace("\n", " ")[:90]
@@ -168,10 +166,9 @@ def build_context(selected: List[Dict], all_rows: List[Dict]) -> str:
 
 
 def format_sources(selected: List[Dict]) -> str:
-    """Lista de fuentes agrupadas por documento."""
-    grouped = defaultdict(list)
+    grouped = {}
     for r in selected:
-        grouped[r["doc_id"]].append(r["chunk_id"])
+        grouped.setdefault(r["doc_id"], []).append(r["chunk_id"])
     if not grouped:
         return "Fuentes: (sin pasajes seleccionados)"
     lines = []
@@ -184,17 +181,28 @@ def format_sources(selected: List[Dict]) -> str:
 # =======================
 # Reranker (opcional)
 # =======================
-def maybe_rerank(query: str, rows: List[Dict], candidates: int) -> List[Dict]:
+def maybe_rerank(query: str, rows: List[Dict]) -> List[Dict]:
     """Aplica cross-encoder si está habilitado; devuelve rows reordenados."""
     if not RERANKER_ENABLED or not rows:
         return rows
     try:
-        from reranker import rerank as crossenc_rerank
+        from sentence_transformers import CrossEncoder
     except Exception as e:
         if DEBUG:
-            print(f"[WARN] No se pudo importar el reranker: {e}")
+            print(f"[WARN] No se pudo importar sentence-transformers: {e}")
         return rows
-    return crossenc_rerank(query, rows, top_k=candidates)
+    model_name = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    try:
+        model = CrossEncoder(model_name)
+        pairs = [(query, (r["content"] or "")) for r in rows]
+        scores = model.predict(pairs)
+        augmented = list(zip(scores, rows))
+        augmented.sort(key=lambda x: float(x[0]), reverse=True)
+        return [r for s, r in augmented]
+    except Exception as e:
+        if DEBUG:
+            print(f"[WARN] Fallo al usar el reranker: {e}")
+        return rows
 
 
 # =======================
@@ -204,16 +212,15 @@ def answer(query: str, k: int) -> str:
     # nº de candidatos a pedir al retriever (si hay reranker, pedimos más)
     cand = RERANKER_CANDIDATES if RERANKER_ENABLED else k
 
-    # recuperar
+    # recuperar más candidatos
     all_rows = retrieve(query, limit=cand)
 
     # rerank opcional (reordena por cross-encoder)
-    all_rows = maybe_rerank(query, all_rows, candidates=cand)
+    all_rows = maybe_rerank(query, all_rows)
 
-    # filtros y diversidad
+    # filtros, diversidad y corte a TOP_K
     selected = _filter_and_diversify(all_rows)
 
-    # construir contexto
     context = build_context(selected, all_rows)
     if not context:
         return "No tengo datos suficientes en el contexto para responder con confianza."
@@ -229,46 +236,8 @@ def answer(query: str, k: int) -> str:
     return reply.strip() + "\n\n" + format_sources(selected)
 
 
-# =======================
-# CLI
-# =======================
 if __name__ == "__main__":
-    import argparse
+    import sys
 
-    parser = argparse.ArgumentParser(description="Consulta RAG sobre tus documentos")
-    parser.add_argument("question", nargs="*", help="Texto de la pregunta")
-    parser.add_argument("--k", type=int, help="Top-K final (por defecto: TOP_K de .env)")
-    parser.add_argument("--threshold", type=float, help="Umbral de score 0..1 (SCORE_THRESHOLD)")
-    parser.add_argument(
-        "--max-per-doc", type=int, help="Máximo de chunks por documento (MAX_CHUNKS_PER_DOC)"
-    )
-    parser.add_argument(
-        "--no-round-robin", action="store_true", help="Desactivar round-robin entre docs"
-    )
-    parser.add_argument(
-        "--rerank", action="store_true", help="Forzar activar reranker (ignora .env)"
-    )
-    parser.add_argument("--no-rerank", action="store_true", help="Forzar desactivar reranker")
-    parser.add_argument(
-        "--max-ctx", type=int, help="Límite de caracteres del contexto (MAX_CONTEXT_CHARS)"
-    )
-    args = parser.parse_args()
-
-    # Overrides de runtime (si se pasan)
-    if args.k is not None:
-        TOP_K = args.k
-    if args.threshold is not None:
-        SCORE_THRESHOLD = args.threshold
-    if args.max_per_doc is not None:
-        MAX_PER_DOC = args.max_per_doc
-    if args.no_round_robin:
-        ROUND_ROBIN = False
-    if args.max_ctx is not None:
-        MAX_CTX = args.max_ctx
-    if args.rerank:
-        RERANKER_ENABLED = True
-    if args.no_rerank:
-        RERANKER_ENABLED = False
-
-    q = " ".join(args.question) or "¿Qué es MCP y para qué sirve?"
+    q = " ".join(sys.argv[1:]) or "¿Qué es MCP y para qué sirve?"
     print(answer(q, k=TOP_K))
