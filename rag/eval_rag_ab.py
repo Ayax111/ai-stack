@@ -1,28 +1,39 @@
-# rag/eval_rag_ab.py
 from __future__ import annotations
 
 import csv
 import os
 import time
+from collections import deque
 from pathlib import Path
 from typing import Dict, List
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-# Carga .env local del directorio
+# Carga .env local del directorio (override=True para refrescar cambios)
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=True)
 
 DB_URL = os.getenv("DATABASE_URL")
 if not DB_URL:
     raise SystemExit("Falta DATABASE_URL en .env")
 
+# Parámetros de retrieve / control
 TOP_K = int(os.getenv("TOP_K", "5"))
 SCORE_THRESHOLD = float(os.getenv("SCORE_THRESHOLD", "0.25"))
-RERANKER_CANDIDATES = int(os.getenv("RERANKER_CANDIDATES", "20"))
 
-# Embeddings (consulta)
+# Diversidad por documento (alineado con query.py)
+MAX_PER_DOC = int(os.getenv("MAX_CHUNKS_PER_DOC", "2"))
+ROUND_ROBIN = os.getenv("ROUND_ROBIN_PER_DOC", "1") == "1"
+
+# Reranker
+RERANKER_CANDIDATES = int(os.getenv("RERANKER_CANDIDATES", "20"))
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANKER_BATCH_SIZE = int(os.getenv("RERANKER_BATCH_SIZE", "16"))
+
+# Backend de embeddings para la consulta
 BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence-transformers").lower()
+
+# --------- Embeddings (consulta) ----------
 if BACKEND == "sentence-transformers":
     from sentence_transformers import SentenceTransformer
 
@@ -45,31 +56,25 @@ elif BACKEND == "lmstudio":
     def embed(q: str) -> List[float]:
         payload = {"model": EMB_MODEL, "input": [q]}
         r = httpx.post(EMB_URL, json=payload, headers=HEADERS, timeout=TIMEOUT)
+        # Fallback si /embeddings no existe y solo está /embedding
         if r.status_code == 404 and EMB_ENDPOINT == "embeddings":
             r = httpx.post(f"{EMB_BASE}/embedding", json=payload, headers=HEADERS, timeout=TIMEOUT)
         r.raise_for_status()
-        return r.json()["data"][0]["embedding"]
+        js = r.json()
+        if isinstance(js, dict) and "data" in js:
+            return js["data"][0]["embedding"]
+        if isinstance(js, dict) and "embedding" in js:
+            return js["embedding"]
+        raise RuntimeError(f"Respuesta inesperada del servidor de embeddings: {js}")
 else:
     raise SystemExit(f"EMBEDDING_BACKEND no soportado: {BACKEND}")
 
-# Reranker (lazy)
-RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-_cross = None
-
-
-def _load_reranker():
-    global _cross
-    if _cross is None:
-        from sentence_transformers import CrossEncoder
-
-        _cross = CrossEncoder(RERANKER_MODEL)
-    return _cross
-
-
+# --------- DB ----------
 engine = create_engine(DB_URL, future=True)
 
 
 def retrieve(query: str, k: int) -> List[Dict]:
+    """Devuelve k candidatos ordenados por similitud vectorial (con threshold)."""
     qvec = embed(query)
     qlit = "[" + ",".join(f"{x:.6f}" for x in qvec) + "]"
     with engine.begin() as conn:
@@ -92,6 +97,19 @@ def retrieve(query: str, k: int) -> List[Dict]:
     return [r for r in rows if r["score"] is None or r["score"] >= SCORE_THRESHOLD]
 
 
+# --------- Reranker ----------
+_cross = None
+
+
+def _load_reranker():
+    global _cross
+    if _cross is None:
+        from sentence_transformers import CrossEncoder
+
+        _cross = CrossEncoder(RERANKER_MODEL)
+    return _cross
+
+
 def rerank(query: str, rows: List[Dict]) -> List[Dict]:
     if not rows:
         return rows
@@ -101,12 +119,48 @@ def rerank(query: str, rows: List[Dict]) -> List[Dict]:
         print(f"[WARN] Reranker no disponible ({e}); usando baseline.")
         return rows
     pairs = [(query, (r["content"] or "")) for r in rows]
-    scores = model.predict(pairs)
+    scores = model.predict(pairs, batch_size=RERANKER_BATCH_SIZE)
     augmented = list(zip(scores, rows))
     augmented.sort(key=lambda x: float(x[0]), reverse=True)
     return [r for s, r in augmented]
 
 
+# --------- Diversidad por documento (igual que query.py) ----------
+def _filter_and_diversify(rows: List[Dict], k: int) -> List[Dict]:
+    if not rows:
+        return []
+    groups: Dict[str, List[Dict]] = {}
+    for r in rows:
+        groups.setdefault(r["doc_id"], []).append(r)
+
+    # Limita por documento respetando orden
+    for doc in groups:
+        groups[doc] = groups[doc][:MAX_PER_DOC]
+
+    if ROUND_ROBIN:
+        queues = [deque(groups[doc]) for doc in sorted(groups.keys())]
+        mixed: List[Dict] = []
+        added = 0
+        while queues and added < k:
+            new_queues = []
+            for q in queues:
+                if q and added < k:
+                    mixed.append(q.popleft())
+                    added += 1
+                if q:
+                    new_queues.append(q)
+            queues = new_queues
+        return mixed
+    else:
+        mixed: List[Dict] = []
+        for doc in groups:
+            mixed.extend(groups[doc])
+            if len(mixed) >= k:
+                break
+        return mixed[:k]
+
+
+# --------- Métricas ----------
 def contains_all(text: str, terms: List[str]) -> bool:
     t = text.lower()
     return all(term.lower() in t for term in terms) if terms else True
@@ -129,8 +183,8 @@ def evaluate_case(case: Dict, k: int, variant: str) -> Dict:
     rows = retrieve(q, cand)
     if variant == "rerank":
         rows = rerank(q, rows)
-    # nos quedamos con k tras (re)ordenar
-    rows = rows[:k]
+    # APLICAR DIVERSIDAD Y CORTAR A k (igual que en query.py)
+    rows = _filter_and_diversify(rows, k)
     dt = time.perf_counter() - t0
 
     # contexto combinado
@@ -162,7 +216,8 @@ def evaluate_case(case: Dict, k: int, variant: str) -> Dict:
 def main():
     tests_path = Path(__file__).with_name("tests.yaml")
     if not tests_path.exists():
-        raise SystemExit(f"No existe {tests_path}.")
+        raise SystemExit(f"No existe {tests_path}. Crea rag/tests.yaml.")
+
     import yaml
 
     cases = yaml.safe_load(tests_path.read_text()) or []

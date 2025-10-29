@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from collections import deque
 from pathlib import Path
 from typing import Dict, List
 
@@ -31,6 +32,8 @@ ROUND_ROBIN = os.getenv("ROUND_ROBIN_PER_DOC", "1") == "1"
 # Reranker
 RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "0") == "1"
 RERANKER_CANDIDATES = int(os.getenv("RERANKER_CANDIDATES", "20"))
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANKER_BATCH_SIZE = int(os.getenv("RERANKER_BATCH_SIZE", "16"))
 
 # Backend de embeddings (consulta)
 BACKEND = os.getenv("EMBEDDING_BACKEND", "sentence-transformers").lower()
@@ -65,8 +68,12 @@ elif BACKEND == "lmstudio":
         if r.status_code == 404 and EMB_ENDPOINT == "embeddings":
             r = httpx.post(f"{EMB_BASE}/embedding", json=payload, headers=HEADERS, timeout=TIMEOUT)
         r.raise_for_status()
-        data = r.json()
-        return data["data"][0]["embedding"]
+        js = r.json()
+        if isinstance(js, dict) and "data" in js:
+            return js["data"][0]["embedding"]
+        if isinstance(js, dict) and "embedding" in js:
+            return js["embedding"]
+        raise RuntimeError(f"Respuesta inesperada del servidor de embeddings: {js}")
 else:
     raise SystemExit(f"EMBEDDING_BACKEND no soportado: {BACKEND}")
 
@@ -108,20 +115,18 @@ def _filter_and_diversify(rows: List[Dict]) -> List[Dict]:
     if not rows:
         return []
 
-    groups = {}
+    groups: Dict[str, List[Dict]] = {}
     for r in rows:
-        doc = r["doc_id"]
-        groups.setdefault(doc, []).append(r)
+        groups.setdefault(r["doc_id"], []).append(r)
 
     # Limitar por documento respetando el orden por similitud
     for doc in groups:
         groups[doc] = groups[doc][:MAX_PER_DOC]
 
     if ROUND_ROBIN:
-        from collections import deque
-
         queues = [deque(groups[doc]) for doc in sorted(groups.keys())]
-        mixed, added = [], 0
+        mixed: List[Dict] = []
+        added = 0
         while queues and added < TOP_K:
             new_queues = []
             for q in queues:
@@ -153,7 +158,8 @@ def build_context(selected: List[Dict], all_rows: List[Dict]) -> str:
             preview = (r["content"] or "").replace("\n", " ")[:90]
             print(f"✔ [{r['doc_id']}#{r['chunk_id']}] score={r['score']:.3f} → {preview}...")
 
-    parts, total = [], 0
+    parts: List[str] = []
+    total = 0
     for r in selected:
         prefix = f"[{r['doc_id']}#{r['chunk_id']}] "
         text = (r["content"] or "").strip()
@@ -166,12 +172,12 @@ def build_context(selected: List[Dict], all_rows: List[Dict]) -> str:
 
 
 def format_sources(selected: List[Dict]) -> str:
-    grouped = {}
+    grouped: Dict[str, List[int]] = {}
     for r in selected:
         grouped.setdefault(r["doc_id"], []).append(r["chunk_id"])
     if not grouped:
         return "Fuentes: (sin pasajes seleccionados)"
-    lines = []
+    lines: List[str] = []
     for doc, chunks in grouped.items():
         uniq = sorted(set(chunks))
         lines.append(f"- {doc}  (chunks: {', '.join(map(str, uniq))})")
@@ -187,15 +193,10 @@ def maybe_rerank(query: str, rows: List[Dict]) -> List[Dict]:
         return rows
     try:
         from sentence_transformers import CrossEncoder
-    except Exception as e:
-        if DEBUG:
-            print(f"[WARN] No se pudo importar sentence-transformers: {e}")
-        return rows
-    model_name = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-    try:
-        model = CrossEncoder(model_name)
+
+        model = CrossEncoder(RERANKER_MODEL)
         pairs = [(query, (r["content"] or "")) for r in rows]
-        scores = model.predict(pairs)
+        scores = model.predict(pairs, batch_size=RERANKER_BATCH_SIZE)
         augmented = list(zip(scores, rows))
         augmented.sort(key=lambda x: float(x[0]), reverse=True)
         return [r for s, r in augmented]
