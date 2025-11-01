@@ -39,8 +39,8 @@ venv:
 
 deps: venv
 > cd rag && . .venv/bin/activate && pip install \
->   openai httpx python-dotenv sqlalchemy "psycopg[binary]" pgvector \
->   langchain pypdf sentence-transformers numpy ruff
+>   openai httpx requests python-dotenv sqlalchemy "psycopg[binary]" pgvector \
+>   langchain pypdf sentence-transformers numpy ruff pytest
 
 # Ejecuta cualquier comando dentro del venv:
 # uso: make run cmd="python query.py '¿Qué es MCP?'"
