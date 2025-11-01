@@ -6,7 +6,9 @@ import time
 from collections import deque
 from pathlib import Path
 from typing import Dict, List
+from urllib.parse import urlparse
 
+import yaml
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
@@ -44,16 +46,80 @@ if BACKEND == "sentence-transformers":
 
 elif BACKEND == "lmstudio":
     import httpx
+    from LMStudioManager import (
+        DEFAULT_CHAT_PORT,
+        DEFAULT_EMBED_PORT,
+        DEFAULT_HOST,
+        LMStudioManager,
+        normalize_lmstudio_url,
+    )
 
-    EMB_BASE = os.getenv("EMBEDDING_BASE_URL", os.getenv("LLM_BASE_URL", "")).rstrip("/")
+    EMB_BASE_ENV = os.getenv("EMBEDDING_BASE_URL")
+    EMB_HOST_ENV = os.getenv("EMBEDDING_HOST")
+    EMB_PORT_ENV = os.getenv("EMBEDDING_PORT")
+    LLM_BASE_ENV = os.getenv("LLM_BASE_URL")
+
+    parsed_fb = None
+    fallback_host = EMB_HOST_ENV
+    fallback_port = None
+    if LLM_BASE_ENV:
+        parsed_fb = urlparse(LLM_BASE_ENV if "://" in LLM_BASE_ENV else f"http://{LLM_BASE_ENV}")
+        fallback_host = fallback_host or parsed_fb.hostname
+        fallback_port = parsed_fb.port
+    fallback_host = fallback_host or DEFAULT_HOST
+    fallback_port = fallback_port or DEFAULT_CHAT_PORT
+
+    if EMB_BASE_ENV:
+        primary_base = EMB_BASE_ENV
+    elif EMB_HOST_ENV or EMB_PORT_ENV:
+        port_for_primary = int(EMB_PORT_ENV) if EMB_PORT_ENV else DEFAULT_EMBED_PORT
+        primary_base = f"http://{fallback_host}:{port_for_primary}/v1"
+    else:
+        primary_base = None
+
+    override_port = None
+    if EMB_PORT_ENV:
+        override_port = int(EMB_PORT_ENV)
+    elif EMB_BASE_ENV:
+        parsed_primary = urlparse(
+            EMB_BASE_ENV if "://" in EMB_BASE_ENV else f"http://{EMB_BASE_ENV}"
+        )
+        primary_host = parsed_primary.hostname or fallback_host
+        primary_port = parsed_primary.port or fallback_port
+        if primary_host == fallback_host and primary_port == fallback_port:
+            override_port = DEFAULT_EMBED_PORT
+    else:
+        override_port = DEFAULT_EMBED_PORT
+
+    EMB_BASE = normalize_lmstudio_url(
+        primary_base,
+        fallback=LLM_BASE_ENV,
+        default_host=fallback_host,
+        default_port=DEFAULT_EMBED_PORT,
+        override_port=override_port,
+        override_host=EMB_HOST_ENV,
+    )
     EMB_KEY = os.getenv("EMBEDDING_API_KEY", os.getenv("LLM_API_KEY", "lm-studio"))
     EMB_MODEL = os.getenv("EMBEDDING_MODEL") or ""
     EMB_ENDPOINT = (os.getenv("EMBEDDING_ENDPOINT") or "embeddings").strip("/")
     EMB_URL = f"{EMB_BASE}/{EMB_ENDPOINT}"
     TIMEOUT = httpx.Timeout(connect=5, read=120, write=30, pool=5)
     HEADERS = {"Authorization": f"Bearer {EMB_KEY}"}
+    _embedding_manager = LMStudioManager(base_url=EMB_BASE, api_key=EMB_KEY)
+    _embedding_ready = {"value": False}
+
+    def _ensure_embedding_ready() -> None:
+        if _embedding_ready["value"]:
+            return
+        ok = _embedding_manager.ensure_model_loaded(EMB_MODEL, wait_time=30)
+        if not ok:
+            raise RuntimeError(
+                f"No se pudo cargar el modelo de embeddings {EMB_MODEL} en LM Studio."
+            )
+        _embedding_ready["value"] = True
 
     def embed(q: str) -> List[float]:
+        _ensure_embedding_ready()
         payload = {"model": EMB_MODEL, "input": [q]}
         r = httpx.post(EMB_URL, json=payload, headers=HEADERS, timeout=TIMEOUT)
         # Fallback si /embeddings no existe y solo está /embedding
@@ -217,8 +283,6 @@ def main():
     tests_path = Path(__file__).with_name("tests.yaml")
     if not tests_path.exists():
         raise SystemExit(f"No existe {tests_path}. Crea rag/tests.yaml.")
-
-    import yaml
 
     cases = yaml.safe_load(tests_path.read_text()) or []
     if not cases:
